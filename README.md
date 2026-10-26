@@ -59,7 +59,7 @@
    * `KEY_ALIAS`: 金鑰別名 (Alias)。
    * `KEY_PASSWORD`: 金鑰別名專用密碼。
 
-   > 💡若缺少上述任一 Secrets，CI 將自動降級為「臨時 Debug 簽署」，並在 CI 報告中標示待設定 Secrets。
+   > ⚠️ `master` 發布建置**必須**設定完整的 4 個 Secrets。缺少任一項即停止建置，禁止使用臨時 Debug 簽章冒充正式 APK。PR / 非 `master` 手動建置才使用 Debug 簽章。
 
 4. **提取 APK 簽章 SHA-1 / SHA-256 指紋**:
    * **方式 A (從 GitHub Actions CI 摘要與 Artifacts 提取 - 推薦)**:
@@ -122,12 +122,13 @@ KEYSTORE_PATH=release.keystore KEYSTORE_PASSWORD=your_pass KEY_ALIAS=your_alias 
 
 ### 1. 自動觸發機制
 * **PR 自動驗證**: 當有 Pull Request 指向 `master` 分支時，自動觸發單元測試與 APK 建置。
-* **合併/推送自動建置**: 當程式碼合併或直接推送到 `master` 分支時，自動建置並產出最新 APK。
+* **合併/推送自動發布**: 當程式碼合併或推送到 `master` 時，先執行測試、用 Actions KeyStore 簽署正式 Release APK、驗證憑證指紋，再建立最新 GitHub Release。僅在新 Release 成功後刪除其他舊 Release 與其 Tag。
+* **安全性**: PR 與其他分支不發布 Release；當建置落後於最新 master 時跳過發布，避免舊版覆蓋新版。
 
 ### 2. 手動觸發建置 (`workflow_dispatch`)
 1. 前往專案的 GitHub Repository 頁面，點選 **Actions** 頁籤。
 2. 在左側工作流程清單中選擇 **Build & Package Android APK**。
-3. 點擊右側的 **Run workflow** 按鈕，選擇分支並點擊確認執行。
+3. 點擊右側的 **Run workflow** 按鈕，選擇 `master` 分支並點擊確認執行。選擇 `master` 會執行正式發布；其他分支僅供 Debug 驗證。
 
 ### 3. 下載 APK Artifacts、校驗碼與簽章指紋報告
 1. 進入任何一次執行的 Action Run 詳情頁面。
@@ -139,6 +140,12 @@ KEYSTORE_PATH=release.keystore KEYSTORE_PASSWORD=your_pass KEY_ALIAS=your_alias 
      * `apk_signature_fingerprints.txt`: APK 簽章憑證 SHA-1 / SHA-256 指紋報告（提供給 Google Cloud Console 登記 OAuth 用）。
    * **`test-report-<commit-sha>`**: 包含單元測試報告（HTML / XML 格式）。
 4. Artifacts 保留期限為 30 天。若單元測試、簽章驗證或憑證指紋擷取失敗，建置將直接標示失敗。
+
+### 4. 最新 Release（推薦安裝來源）
+* 固定下載網址：**[MoneyTracker 最新 Release](https://github.com/jimmy0933b3-sudo/money/releases/latest)**。
+* 每次 `master` 推送或從 `master` 手動執行建置通過後，附上已使用 Actions KeyStore 簽署、可直接安裝的 APK、`.apk.sha256` 校驗檔與 `apk_signature_fingerprints.txt`。
+* 僅保留**最近成功發布的一筆 GitHub Release**，舊 Release 與 Tag 會自動刪除。Actions 的歷次建置紀錄與 30 天 Artifacts 不受此規則影響。
+* **注意**：如曾安裝使用不同簽章金鑰的 APK，即使 App 的套件名稱相同，也不能直接覆蓋更新。請確保每次 CI 都使用相同的 KeyStore；刪除舊 App 前先確認可還原備份。
 
 ---
 
