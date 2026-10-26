@@ -12,8 +12,13 @@ android {
         applicationId = "com.moneytracker.app"
         minSdk = 29
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.0.1"
+        // CI releases receive monotonically increasing Android version codes.
+        // Local builds retain the original version without relying on GitHub Actions.
+        val ciRunNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
+        versionCode = ciRunNumber?.let {
+            (10000L + it).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        } ?: 2
+        versionName = ciRunNumber?.let { "1.0.1.$it" } ?: "1.0.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
