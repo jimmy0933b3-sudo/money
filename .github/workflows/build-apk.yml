@@ -9,6 +9,9 @@ name: Build & Package Android APK
       - master
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build APK and Run Unit Tests
@@ -33,32 +36,48 @@ jobs:
         run: ./gradlew testDebugUnitTest
         timeout-minutes: 10
 
-      - name: Decode Release Keystore from Secrets (if configured)
+      - name: Prepare signing (master must use Actions keystore)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ] && [ -n "${{ secrets.KEYSTORE_PASSWORD }}" ] && [ -n "${{ secrets.KEY_ALIAS }}" ] && [ -n "${{ secrets.KEY_PASSWORD }}" ]; then
-            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > release.keystore
-            echo "KEYSTORE_PATH=release.keystore" >> $GITHUB_ENV
-            echo "KEYSTORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}" >> $GITHUB_ENV
-            echo "KEY_ALIAS=${{ secrets.KEY_ALIAS }}" >> $GITHUB_ENV
-            echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> $GITHUB_ENV
-            echo "SIGNING_MODE=fixed" >> $GITHUB_ENV
-            echo "SIGNING_STATUS=固定 KeyStore 簽署 (Release Key)" >> $GITHUB_ENV
-            echo "MISSING_SECRETS=無 (已設定完整固定 KeyStore Secrets)" >> $GITHUB_ENV
-            echo "Signing keystore decoded from GitHub Secrets."
-          else
-            echo "SIGNING_MODE=debug" >> $GITHUB_ENV
-            echo "SIGNING_STATUS=臨時 Debug 簽署 (Secrets 待設定)" >> $GITHUB_ENV
-            MISSING=""
-            [ -z "${{ secrets.KEYSTORE_BASE64 }}" ] && MISSING="${MISSING} KEYSTORE_BASE64"
-            [ -z "${{ secrets.KEYSTORE_PASSWORD }}" ] && MISSING="${MISSING} KEYSTORE_PASSWORD"
-            [ -z "${{ secrets.KEY_ALIAS }}" ] && MISSING="${MISSING} KEY_ALIAS"
-            [ -z "${{ secrets.KEY_PASSWORD }}" ] && MISSING="${MISSING} KEY_PASSWORD"
-            echo "MISSING_SECRETS=待設定 GitHub Secrets:${MISSING}" >> $GITHUB_ENV
-            echo "Required signing secrets missing:${MISSING}. Building standard debug APK."
+          set -euo pipefail
+
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" || "$GITHUB_REF" != "refs/heads/master" ]]; then
+            echo "SIGNING_MODE=debug" >> "$GITHUB_ENV"
+            echo "SIGNING_STATUS=Debug 簽署 (僅供 PR/非 master 測試)" >> "$GITHUB_ENV"
+            echo "MISSING_SECRETS=未使用 Release Secrets" >> "$GITHUB_ENV"
+            exit 0
           fi
 
+          missing=()
+          [[ -z "$KEYSTORE_BASE64" ]] && missing+=(KEYSTORE_BASE64)
+          [[ -z "$KEYSTORE_PASSWORD" ]] && missing+=(KEYSTORE_PASSWORD)
+          [[ -z "$KEY_ALIAS" ]] && missing+=(KEY_ALIAS)
+          [[ -z "$KEY_PASSWORD" ]] && missing+=(KEY_PASSWORD)
+          if (( ${#missing[@]} > 0 )); then
+            printf '::error::Missing required signing secrets: %s\n' "${missing[*]}"
+            exit 1
+          fi
+
+          keystore="$RUNNER_TEMP/money-release.keystore"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          test -s "$keystore"
+          chmod 600 "$keystore"
+          echo "KEYSTORE_PATH=$keystore" >> "$GITHUB_ENV"
+          echo "SIGNING_MODE=fixed" >> "$GITHUB_ENV"
+          echo "SIGNING_STATUS=GitHub Actions 固定 KeyStore Release 簽署" >> "$GITHUB_ENV"
+          echo "MISSING_SECRETS=無" >> "$GITHUB_ENV"
+
       - name: Build APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
+          set -euo pipefail
           if [ "$SIGNING_MODE" = "fixed" ]; then
             echo "Building Release APK with fixed KeyStore..."
             ./gradlew assembleRelease
@@ -71,7 +90,7 @@ jobs:
 
       - name: Verify APK Signature & Extract Fingerprints with apksigner
         run: |
-          set -e
+          set -euo pipefail
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
           mkdir -p artifacts
 
@@ -85,7 +104,7 @@ jobs:
 
           # 1. 計算 APK 檔案校驗碼 (File SHA-256 Checksum)
           FILE_SHA256=$(sha256sum "$NAMED_APK" | awk '{print $1}')
-          echo "$FILE_SHA256" > "${NAMED_APK}.sha256"
+          (cd artifacts && sha256sum "app-${SHORT_SHA}.apk" > "app-${SHORT_SHA}.apk.sha256")
 
           # 2. 使用 Android SDK apksigner 驗證並提取簽章憑證指紋
           APKSIGNER_BIN=$(find $ANDROID_SDK_ROOT/build-tools -name "apksigner" | sort -V | tail -n 1)
@@ -181,11 +200,12 @@ jobs:
           EOF
 
       - name: Upload APK & Signature Fingerprint Artifacts
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: app-apk-${{ github.sha }}
           path: artifacts/*
+          if-no-files-found: error
           retention-days: 30
 
       - name: Upload Unit Test Report
@@ -195,3 +215,73 @@ jobs:
           name: test-report-${{ github.sha }}
           path: app/build/reports/tests/testDebugUnitTest/
           retention-days: 30
+
+  publish:
+    name: Publish signed latest Release
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: money-master-release
+      cancel-in-progress: false
+
+    steps:
+      - name: Download verified signed APK
+        uses: actions/download-artifact@v4
+        with:
+          name: app-apk-${{ github.sha }}
+          path: release-assets
+
+      - name: Publish latest and remove older Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # A slow old run must never replace a newer commit's published APK.
+          master_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/master" --jq '.object.sha')"
+          if [[ "$master_sha" != "$GITHUB_SHA" ]]; then
+            echo "Skipping release: master is now $master_sha, this run built $GITHUB_SHA."
+            exit 0
+          fi
+
+          shopt -s nullglob
+          apks=(release-assets/*.apk)
+          checksums=(release-assets/*.apk.sha256)
+          reports=(release-assets/apk_signature_fingerprints.txt)
+          if (( ${#apks[@]} != 1 || ${#checksums[@]} != 1 || ${#reports[@]} != 1 )); then
+            echo "::error::Expected exactly one signed APK, checksum and signature report."
+            exit 1
+          fi
+          (cd release-assets && sha256sum --check *.apk.sha256)
+
+          tag="money-build-${GITHUB_RUN_NUMBER}-${GITHUB_SHA:0:7}"
+          title="MoneyTracker Build #${GITHUB_RUN_NUMBER} (${GITHUB_SHA:0:7})"
+          notes="Automatically built from master commit ${GITHUB_SHA}. Signed with the GitHub Actions release keystore. APK checksum and certificate fingerprints are attached."
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            # Make reruns idempotent.
+            gh release upload "$tag" "${apks[@]}" "${checksums[@]}" "${reports[@]}" --clobber
+            gh release edit "$tag" --title "$title" --notes "$notes" --latest
+          else
+            gh release create "$tag" "${apks[@]}" "${checksums[@]}" "${reports[@]}" \
+              --target "$GITHUB_SHA" --title "$title" --notes "$notes" --latest
+          fi
+
+          # Prune only after the new APK was successfully published.
+          # Delete tags as well, so the repository retains only the newest Release tag.
+          old_tags="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --jq '.[].tag_name')"
+          while IFS= read -r old_tag; do
+            [[ -z "$old_tag" || "$old_tag" == "$tag" ]] && continue
+            gh release delete "$old_tag" --yes --cleanup-tag
+          done <<< "$old_tags"
+
+          {
+            echo "### Latest signed APK Release"
+            echo "Published: https://github.com/${GITHUB_REPOSITORY}/releases/latest"
+            echo "Tag: \`$tag\`"
+          } >> "$GITHUB_STEP_SUMMARY"
