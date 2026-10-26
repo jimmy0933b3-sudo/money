@@ -71,6 +71,21 @@ jobs:
           echo "SIGNING_STATUS=GitHub Actions 固定 KeyStore Release 簽署" >> "$GITHUB_ENV"
           echo "MISSING_SECRETS=無" >> "$GITHUB_ENV"
 
+      - name: Validate Release KeyStore
+        if: env.SIGNING_MODE == 'fixed'
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          if [[ ! -s "$KEYSTORE_PATH" ]]; then
+            echo "::error::Release KeyStore is missing or empty."
+            exit 1
+          fi
+          # Validate the expected alias and password before spending time building the APK.
+          # Redirect certificate details so no signing material is written to the logs.
+          keytool -list -keystore "$KEYSTORE_PATH" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
+
       - name: Build APK
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
