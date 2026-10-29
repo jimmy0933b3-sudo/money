@@ -278,7 +278,7 @@ class MainViewModel @JvmOverloads constructor(
     fun onGoogleSignInFailure(statusCode: Int?, rawErrorMsg: String?) {
         _googleAuthState.value = GoogleAuthState.FAILED
         val userMsg = when (statusCode) {
-            10 -> "Google 登入失敗 (錯誤碼: 10 DEVELOPER_ERROR)：請確認 Google Cloud Console 上此 App 包名 (com.moneytracker.app) 與 SHA-1 簽章指紋配置正確。"
+            10 -> "Google 登入設定不符（錯誤碼: 10 DEVELOPER_ERROR）。請在設定頁的登入診斷複製目前 APK 的套件名稱及 SHA-1，核對 Google Cloud Android OAuth 憑證。"
             12500 -> "Google 登入失敗 (錯誤碼: 12500)：請確認裝置已安裝且更新 Google Play 服務，並已啟用 OAuth。"
             12501, 16 -> "登入已取消"
             else -> "Google 登入失敗 (${statusCode?.let { "錯誤碼: $it" } ?: "未知錯誤"})：${rawErrorMsg ?: "存取授權失敗"}"
