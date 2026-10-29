@@ -2,6 +2,11 @@
 package com.moneytracker.app.ui.screens
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.pm.PackageManager
+import java.security.MessageDigest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -25,6 +30,8 @@ import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -34,6 +41,9 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -89,6 +99,8 @@ fun SettingsScreen(viewModel: MainViewModel) {
     var showRestoreDialog by remember { mutableStateOf(false) }
     var restoreTargetFileId by remember { mutableStateOf<String?>(null) }
     var pendingAuthEmail by remember { mutableStateOf<String?>(null) }
+    var showOAuthHelp by remember { mutableStateOf(false) }
+    val installedSha1 = remember(context) { installedApkSha1(context) }
 
     val dateFormat = SimpleDateFormat("yyyy/MM/dd HH:mm", Locale.TAIWAN)
 
@@ -165,7 +177,14 @@ fun SettingsScreen(viewModel: MainViewModel) {
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         item {
-            Text("設定與雲端備份", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Text("設定與雲端備份", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    "連結雲端、管理帳戶，安心保存每一筆記帳。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
 
         // 重裝/切換帳號 待還原提示卡片
@@ -215,163 +234,267 @@ fun SettingsScreen(viewModel: MainViewModel) {
             }
         }
 
-        // Google 雲端備份狀態卡片
+        // Google Drive account, backup actions, and actionable OAuth diagnostics.
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-                shape = RoundedCornerShape(16.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Cloud, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Google Drive 備份", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer
+                        ) {
+                            Icon(
+                                Icons.Default.Cloud,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.padding(12.dp).size(24.dp)
+                            )
                         }
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("Google Drive 備份", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                if (googleAuthState == MainViewModel.GoogleAuthState.LOGGED_IN)
+                                    "已連結 Google 帳號" else "安全備份你的帳務資料",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
 
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant
+                    ) {
+                        Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                            Text(
+                                if (googleAccountEmail.isNullOrBlank()) "尚未連結 Google 帳號"
+                                else googleAccountEmail!!,
+                                style = MaterialTheme.typography.titleSmall,
+                                maxLines = 2,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(Modifier.height(5.dp))
+                            val lastBackupLabel = lastBackupTime?.let { dateFormat.format(Date(it)) } ?: "尚無備份"
+                            Text(
+                                "上次成功備份：$lastBackupLabel",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    if (googleAuthState == MainViewModel.GoogleAuthState.LOGGED_IN) {
+                        OutlinedButton(
+                            onClick = {
+                                val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN).build()
+                                GoogleSignIn.getClient(context, gso).signOut()
+                                viewModel.signOutGoogleAccount()
+                            },
+                            modifier = Modifier.fillMaxWidth().height(48.dp),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Text("切換 / 登出 Google 帳號")
+                        }
+                    } else {
                         Button(
                             onClick = {
                                 if (googleAuthState == MainViewModel.GoogleAuthState.NEEDS_AUTH && driveAuthIntent != null) {
                                     driveAuthLauncher.launch(driveAuthIntent!!)
-                                } else if (googleAccountEmail.isNullOrBlank() || googleAuthState == MainViewModel.GoogleAuthState.NEEDS_AUTH) {
-                                    if (googleAuthState == MainViewModel.GoogleAuthState.NEEDS_AUTH) {
-                                        // 強制登出以確保下次 launchGoogleSignIn() 能完整走一遍驗證流程並補足 scopes
-                                        val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN).build()
-                                        GoogleSignIn.getClient(context, gso).signOut().addOnCompleteListener {
-                                            launchGoogleSignIn()
-                                        }
-                                    } else {
+                                } else if (googleAuthState == MainViewModel.GoogleAuthState.NEEDS_AUTH) {
+                                    val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN).build()
+                                    GoogleSignIn.getClient(context, gso).signOut().addOnCompleteListener {
                                         launchGoogleSignIn()
                                     }
                                 } else {
-                                    val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN).build()
-                                    GoogleSignIn.getClient(context, gso).signOut()
-                                    viewModel.signOutGoogleAccount()
+                                    launchGoogleSignIn()
                                 }
                             },
+                            modifier = Modifier.fillMaxWidth().height(48.dp),
                             enabled = googleAuthState != MainViewModel.GoogleAuthState.LOGGING_IN,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (googleAccountEmail.isNullOrBlank() || googleAuthState == MainViewModel.GoogleAuthState.NEEDS_AUTH) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            shape = RoundedCornerShape(14.dp)
                         ) {
                             Text(
                                 when (googleAuthState) {
-                                    MainViewModel.GoogleAuthState.LOGGING_IN -> "登入中..."
-                                    MainViewModel.GoogleAuthState.NEEDS_AUTH -> "重新授權"
-                                    MainViewModel.GoogleAuthState.LOGGED_IN -> "切換/登出"
-                                    else -> "登入 Google"
+                                    MainViewModel.GoogleAuthState.LOGGING_IN -> "正在登入..."
+                                    MainViewModel.GoogleAuthState.NEEDS_AUTH -> "重新授權 Google Drive"
+                                    else -> "連結 Google 帳號"
                                 }
                             )
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text("連結帳號: ${googleAccountEmail ?: "未連結 (請登入以啟動自動雲端備份)"}", fontSize = 13.sp)
-
-                    val timeStr = if (lastBackupTime != null) dateFormat.format(Date(lastBackupTime!!)) else "尚無備份"
-                    Text("上次成功備份時間: $timeStr", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-
                     if (googleAuthState == MainViewModel.GoogleAuthState.NEEDS_AUTH) {
-                        Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "授權已過期或被撤銷，請點擊上方「重新授權」",
-                            color = MaterialTheme.colorScheme.error,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold
+                            "Google Drive 授權已過期或遭撤銷，請重新授權。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
                         )
                     }
 
-                    if (!googleAuthErrorMessage.isNullOrBlank() && googleAuthState != MainViewModel.GoogleAuthState.NEEDS_AUTH) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = googleAuthErrorMessage!!,
-                            color = MaterialTheme.colorScheme.error,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+                    if (!googleAuthErrorMessage.isNullOrBlank()) {
+                        val developerError = googleAuthErrorMessage!!.contains("DEVELOPER_ERROR") ||
+                            googleAuthErrorMessage!!.contains("錯誤碼: 10")
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.errorContainer,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(14.dp),
+                                verticalAlignment = Alignment.Top
+                            ) {
+                                Icon(
+                                    Icons.Default.Info,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onErrorContainer,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(Modifier.width(10.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        if (developerError) "Google 登入設定不符（錯誤碼 10）" else "登入或授權失敗",
+                                        color = MaterialTheme.colorScheme.onErrorContainer,
+                                        style = MaterialTheme.typography.titleSmall
+                                    )
+                                    Spacer(Modifier.height(5.dp))
+                                    Text(
+                                        if (developerError)
+                                            "請檢查 Google Cloud 的 Android OAuth 憑證，確認套件名稱及 SHA-1 與此手機安裝的 APK 完全相同。"
+                                        else googleAuthErrorMessage!!,
+                                        color = MaterialTheme.colorScheme.onErrorContainer,
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
+                            }
+                        }
                     }
+
+                    TextButton(onClick = { showOAuthHelp = !showOAuthHelp }) {
+                        Icon(Icons.Default.Info, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (showOAuthHelp) "收起 Google 登入診斷" else "Google 登入診斷 / 查看 SHA-1")
+                    }
+
+                    if (showOAuthHelp) {
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant
+                        ) {
+                            Column(
+                                modifier = Modifier.fillMaxWidth().padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Text("目前安裝的 APK 憑證", style = MaterialTheme.typography.titleSmall)
+                                Text(
+                                    "這是從手機已安裝 App 直接讀取的簽章指紋，不是 APK 檔案校驗碼。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                OAuthDiagnosticValue(
+                                    label = "Package Name",
+                                    value = context.packageName,
+                                    onCopy = { copyOAuthText(context, context.packageName) }
+                                )
+                                OAuthDiagnosticValue(
+                                    label = "SHA-1",
+                                    value = installedSha1 ?: "無法取得，請從 GitHub Actions 簽章報告查看",
+                                    onCopy = if (installedSha1 == null) null else {
+                                        { copyOAuthText(context, installedSha1) }
+                                    }
+                                )
+                                HorizontalDivider()
+                                Text(
+                                    "到 Google Cloud Console → API 與服務 → 憑證，建立或修改「Android」OAuth 用戶端，填入上述資訊。並確認 Drive API 已啟用、OAuth 同意畫面及測試使用者設定正確。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
                     when (val bState = backupUiState) {
                         is MainViewModel.BackupUiState.BackingUp -> {
-                            Spacer(modifier = Modifier.height(8.dp))
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                CircularProgressIndicator(modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("正在建立交易快照並上傳備份至 Google Drive...", fontSize = 12.sp)
+                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                                Spacer(Modifier.width(8.dp))
+                                Text("正在備份到 Google Drive...", style = MaterialTheme.typography.bodySmall)
                             }
                         }
                         is MainViewModel.BackupUiState.Success -> {
                             val details = bState.details
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Card(
+                            Surface(
                                 modifier = Modifier.fillMaxWidth(),
-                                colors = CardDefaults.cardColors(containerColor = Color(0xFFE8F5E9)),
-                                shape = RoundedCornerShape(8.dp),
-                                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                shape = RoundedCornerShape(16.dp)
                             ) {
-                                Column(modifier = Modifier.padding(8.dp)) {
-                                    Text("最近一次備份成功！", color = Color(0xFF2E7D32), fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                    Text("時間: ${dateFormat.format(Date(details.backupTime))}", fontSize = 11.sp)
-                                    Text("帳戶筆數: ${details.accountCount} 筆 | 交易筆數: ${details.transactionCount} 筆", fontSize = 11.sp)
-                                    Text("備份識別 ID: ${details.driveFileId}", fontSize = 11.sp, color = Color.DarkGray)
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Button(
-                                        onClick = {
-                                            viewModel.resetRestoreUiState()
-                                            viewModel.fetchCloudBackups()
-                                            restoreTargetFileId = details.driveFileId
-                                            showRestoreDialog = true
-                                        },
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
-                                        modifier = Modifier.height(32.dp)
-                                    ) {
-                                        Text("還原此備份", fontSize = 11.sp)
-                                    }
+                                Column(Modifier.padding(12.dp)) {
+                                    Text("備份完成", style = MaterialTheme.typography.titleSmall)
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(
+                                        "時間：${dateFormat.format(Date(details.backupTime))} · ${details.transactionCount} 筆交易",
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                    Spacer(Modifier.height(5.dp))
+                                    TextButton(onClick = {
+                                        viewModel.resetRestoreUiState()
+                                        viewModel.fetchCloudBackups()
+                                        restoreTargetFileId = details.driveFileId
+                                        showRestoreDialog = true
+                                    }) { Text("查看並還原此備份") }
                                 }
                             }
                         }
                         is MainViewModel.BackupUiState.Error -> {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text("備份失敗: ${bState.message}", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                            Text(
+                                "備份失敗：${bState.message}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
                         }
                         else -> {}
                     }
 
-                    Spacer(modifier = Modifier.height(12.dp))
-
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Button(
                             onClick = { showBackupPasswordDialog = true },
-                            modifier = Modifier.weight(1f),
-                            enabled = !googleAccountEmail.isNullOrBlank() && !isOperationInProgress
+                            modifier = Modifier.weight(1f).height(48.dp),
+                            enabled = !googleAccountEmail.isNullOrBlank() && !isOperationInProgress && !isRestorePending,
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp),
+                            shape = RoundedCornerShape(14.dp)
                         ) {
                             Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("立即備份")
+                            Spacer(Modifier.width(5.dp))
+                            Text("立即備份", maxLines = 1, style = MaterialTheme.typography.labelMedium)
                         }
-
-                        Button(
+                        OutlinedButton(
                             onClick = {
                                 viewModel.resetRestoreUiState()
                                 viewModel.fetchCloudBackups()
                                 restoreTargetFileId = null
                                 showRestoreDialog = true
                             },
-                            modifier = Modifier.weight(1f),
-                            enabled = !googleAccountEmail.isNullOrBlank() && !isOperationInProgress
+                            modifier = Modifier.weight(1f).height(48.dp),
+                            enabled = !googleAccountEmail.isNullOrBlank() && !isOperationInProgress,
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp),
+                            shape = RoundedCornerShape(14.dp)
                         ) {
                             Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("雲端還原")
+                            Spacer(Modifier.width(5.dp))
+                            Text("雲端還原", maxLines = 1, style = MaterialTheme.typography.labelMedium)
                         }
                     }
                 }
@@ -398,9 +521,9 @@ fun SettingsScreen(viewModel: MainViewModel) {
         items(accounts) { account ->
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                shape = RoundedCornerShape(12.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                shape = RoundedCornerShape(18.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
             ) {
                 Row(
                     modifier = Modifier
@@ -412,7 +535,12 @@ fun SettingsScreen(viewModel: MainViewModel) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.AccountBalance, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("${account.name} (${account.type.label})", fontWeight = FontWeight.Bold)
+                        Text(
+                            "${account.name} (${account.type.label})",
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
                     }
                     Text("初始: NT$ ${account.initialBalance}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -844,3 +972,48 @@ fun SettingsScreen(viewModel: MainViewModel) {
         )
     }
 }
+
+@Composable
+private fun OAuthDiagnosticValue(
+    label: String,
+    value: String,
+    onCopy: (() -> Unit)?
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                value,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            if (onCopy != null) {
+                IconButton(onClick = onCopy) {
+                    Icon(Icons.Default.ContentCopy, contentDescription = "複製$label")
+                }
+            }
+        }
+    }
+}
+
+private fun copyOAuthText(context: Context, text: String) {
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    clipboard.setPrimaryClip(ClipData.newPlainText("MoneyTracker OAuth", text))
+}
+
+private fun installedApkSha1(context: Context): String? = runCatching {
+    val packageInfo = context.packageManager.getPackageInfo(
+        context.packageName,
+        PackageManager.GET_SIGNING_CERTIFICATES
+    )
+    val signature = packageInfo.signingInfo?.apkContentsSigners?.firstOrNull()
+        ?: return@runCatching null
+    MessageDigest.getInstance("SHA-1")
+        .digest(signature.toByteArray())
+        .joinToString(":") { "%02X".format(it) }
+}.getOrNull()
